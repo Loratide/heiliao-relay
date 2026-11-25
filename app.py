@@ -1,4 +1,4 @@
-# Heiliao HLS relay v2: strips the fake JPEG prefix glued in front of each TS
+# Heiliao HLS relay v2.1: strips the fake JPEG prefix glued in front of each TS
 # segment by the bf.qugt.com / bf.zsxsf.com CDN and re-serves clean HLS.
 # v2 changes: segments are STREAMED (first byte out as soon as it arrives,
 # not after a full download), Range requests are translated and answered
@@ -126,6 +126,9 @@ class H(BaseHTTPRequestHandler):
                 if mm and length is not None:
                     total = int(mm.group(1)) - off
                     extra["Content-Range"] = "bytes %d-%d/%d" % (a, a + length - 1, total)
+                if length is None:
+                    extra["Connection"] = "close"
+                    self.close_connection = True
                 self._headers(206 if r.status == 206 else 200, "video/mp2t", length, extra)
                 self._pump(r)
             return
@@ -137,7 +140,11 @@ class H(BaseHTTPRequestHandler):
             off = ts_offset(first)
             OFFSET_CACHE[u] = off
             length = (total - off) if total is not None else None
-            self._headers(200, "video/mp2t", length, {"Accept-Ranges": "bytes"})
+            extra = {"Accept-Ranges": "bytes"}
+            if length is None:
+                extra["Connection"] = "close"
+                self.close_connection = True
+            self._headers(200, "video/mp2t", length, extra)
             try:
                 if len(first) > off:
                     self.wfile.write(first[off:])
