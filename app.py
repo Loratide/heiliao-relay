@@ -12,7 +12,7 @@ import os, re, ssl, threading, http.client, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UA = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"}
-ALLOWED_SUFFIXES = ("qugt.com", "zsxsf.com")
+ALLOWED_SUFFIXES = ("qugt.com", "zsxsf.com", "v155p.com")
 CHUNK = 65536
 OFFSET_CACHE = {}
 SEG_CACHE = {}
