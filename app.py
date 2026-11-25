@@ -1,4 +1,4 @@
-# Heiliao HLS relay v2.2: strips the fake JPEG prefix glued in front of each
+# Heiliao HLS relay v2.3: strips the fake JPEG prefix glued in front of each
 # TS segment by the bf.qugt.com / bf.zsxsf.com CDN and re-serves clean HLS.
 # v2.2: persistent upstream connections (no per-segment TLS setup), an
 # in-memory segment cache (repeat / seek-back requests are instant), /s
@@ -20,6 +20,10 @@ SEG_ORDER = []
 SEG_BYTES = [0]
 SEG_MAX = 48 * 1024 * 1024
 LOCK = threading.Lock()
+PLAYLISTS = {}
+SEG_INDEX = {}
+INFLIGHT = set()
+PREFETCH_SEM = threading.Semaphore(3)
 _local = threading.local()
 CTX = ssl.create_default_context()
 
@@ -105,6 +109,42 @@ def cache_put(u, data):
         SEG_ORDER.append(u)
         SEG_BYTES[0] += len(data)
 
+def _prefetch_one(target):
+    try:
+        r = fetch(target)
+        data = r.read()
+        off = ts_offset(data)
+        OFFSET_CACHE[target] = off
+        if off < len(data):
+            cache_put(target, data[off:])
+    except Exception:
+        pass
+    finally:
+        with LOCK:
+            INFLIGHT.discard(target)
+        PREFETCH_SEM.release()
+
+def schedule_prefetch(u):
+    with LOCK:
+        hit = SEG_INDEX.get(u)
+        if not hit:
+            return
+        pl, idx = hit
+        lst = PLAYLISTS.get(pl) or []
+        todo = []
+        for j in (idx + 1, idx + 2, idx + 3):
+            if j < len(lst):
+                t = lst[j]
+                if t not in SEG_CACHE and t not in INFLIGHT:
+                    INFLIGHT.add(t)
+                    todo.append(t)
+    for t in todo:
+        if not PREFETCH_SEM.acquire(blocking=False):
+            with LOCK:
+                INFLIGHT.discard(t)
+            continue
+        threading.Thread(target=_prefetch_one, args=(t,), daemon=True).start()
+
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a): pass
@@ -159,16 +199,27 @@ class H(BaseHTTPRequestHandler):
                 r = fetch(u)
                 text = r.read().decode("utf-8", "replace")
                 out = []
+                raw_segs = []
                 for line in text.splitlines():
                     s = line.strip()
                     if s and not s.startswith("#"):
-                        out.append("/s?u=" + urllib.parse.quote(urllib.parse.urljoin(u, s), safe=""))
+                        full = urllib.parse.urljoin(u, s)
+                        raw_segs.append(full)
+                        out.append("/s?u=" + urllib.parse.quote(full, safe=""))
                     elif 'URI="' in line:
                         out.append(re.sub(r'URI="([^"]+)"',
                             lambda mm: 'URI="/s?u=' + urllib.parse.quote(urllib.parse.urljoin(u, mm.group(1)), safe="") + '"',
                             line))
                     else:
                         out.append(line)
+                with LOCK:
+                    PLAYLISTS[u] = raw_segs
+                    for i, su in enumerate(raw_segs):
+                        SEG_INDEX[su] = (u, i)
+                    while len(PLAYLISTS) > 4:
+                        old_pl = next(iter(PLAYLISTS))
+                        for su in PLAYLISTS.pop(old_pl):
+                            SEG_INDEX.pop(su, None)
                 return self._send(200, "application/vnd.apple.mpegurl", ("\n".join(out) + "\n").encode())
             if q.path == "/s":
                 return self._seg(u)
@@ -177,6 +228,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(502, "text/plain", ("relay error: " + str(e)[:120]).encode())
 
     def _seg(self, u):
+        schedule_prefetch(u)
         cached = cache_get(u)
         if cached is not None:
             return self._serve_range_from_cache(cached)
