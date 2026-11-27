@@ -212,6 +212,19 @@ class H(BaseHTTPRequestHandler):
                             line))
                     else:
                         out.append(line)
+                if any(l.startswith("#EXTINF") for l in out):
+                    # iOS 15's AVFoundation refuses to seek unless the media
+                    # playlist declares itself VOD with an ENDLIST.
+                    out = [l for l in out
+                           if not l.startswith("#EXT-X-PLAYLIST-TYPE:")
+                           and not l.startswith("#EXT-X-ENDLIST")]
+                    for i, l in enumerate(out):
+                        if l.startswith("#EXTM3U"):
+                            out.insert(i + 1, "#EXT-X-PLAYLIST-TYPE:VOD")
+                            break
+                    else:
+                        out.insert(0, "#EXT-X-PLAYLIST-TYPE:VOD")
+                    out.append("#EXT-X-ENDLIST")
                 with LOCK:
                     PLAYLISTS[u] = raw_segs
                     for i, su in enumerate(raw_segs):
